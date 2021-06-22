@@ -3,18 +3,14 @@ import shutil
 
 import pytest
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
+from pytorch_lightning.callbacks import EarlyStopping
 from pytorch_lightning.loggers import TensorBoardLogger
 from test_models.conftest import make_dataloaders
 from torch import nn
 
 from pytorch_forecasting.data.encoders import GroupNormalizer
-from pytorch_forecasting.metrics import (
-    BetaDistributionLoss,
-    LogNormalDistributionLoss,
-    NegativeBinomialDistributionLoss,
-)
-from pytorch_forecasting.models import DeepAR
+from pytorch_forecasting.metrics import MAE, CrossEntropy, QuantileLoss
+from pytorch_forecasting.models import RecurrentNetwork
 
 
 def _integration(
@@ -51,14 +47,13 @@ def _integration(
         logger=logger,
     )
 
-    net = DeepAR.from_dataset(
+    net = RecurrentNetwork.from_dataset(
         train_dataloader.dataset,
         cell_type=cell_type,
         learning_rate=0.15,
         log_gradient_flow=True,
         log_interval=1000,
-        n_plotting_samples=100,
-        **kwargs,
+        **kwargs
     )
     net.size()
     try:
@@ -68,7 +63,7 @@ def _integration(
             val_dataloaders=val_dataloader,
         )
         # check loading
-        net = DeepAR.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
+        net = RecurrentNetwork.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
 
         # check prediction
         net.predict(val_dataloader, fast_dev_run=True, return_index=True, return_decoder_lengths=True)
@@ -84,21 +79,7 @@ def _integration(
         {},
         {"cell_type": "GRU"},
         dict(
-            loss=LogNormalDistributionLoss(),
-            clip_target=True,
-            data_loader_kwargs=dict(target_normalizer=GroupNormalizer(groups=["agency", "sku"], transformation="log")),
-        ),
-        dict(
-            loss=NegativeBinomialDistributionLoss(),
-            clip_target=False,
             data_loader_kwargs=dict(target_normalizer=GroupNormalizer(groups=["agency", "sku"], center=False)),
-        ),
-        dict(
-            loss=BetaDistributionLoss(),
-            clip_target=True,
-            data_loader_kwargs=dict(
-                target_normalizer=GroupNormalizer(groups=["agency", "sku"], transformation="logit")
-            ),
         ),
         dict(
             data_loader_kwargs=dict(
@@ -115,31 +96,19 @@ def _integration(
     ],
 )
 def test_integration(data_with_covariates, tmp_path, gpus, kwargs):
-    if "loss" in kwargs and isinstance(kwargs["loss"], NegativeBinomialDistributionLoss):
-        data_with_covariates = data_with_covariates.assign(volume=lambda x: x.volume.round())
     _integration(data_with_covariates, tmp_path, gpus, **kwargs)
 
 
 @pytest.fixture
 def model(dataloaders_with_covariates):
     dataset = dataloaders_with_covariates["train"].dataset
-    net = DeepAR.from_dataset(
+    net = RecurrentNetwork.from_dataset(
         dataset,
         learning_rate=0.15,
         log_gradient_flow=True,
         log_interval=1000,
     )
     return net
-
-
-def test_predict_average(model, dataloaders_with_covariates):
-    prediction = model.predict(dataloaders_with_covariates["val"], fast_dev_run=True, mode="prediction", n_samples=100)
-    assert prediction.ndim == 2, "expected averaging of samples"
-
-
-def test_predict_samples(model, dataloaders_with_covariates):
-    prediction = model.predict(dataloaders_with_covariates["val"], fast_dev_run=True, mode="samples", n_samples=100)
-    assert prediction.size()[-1] == 100, "expected raw samples"
 
 
 def test_pickle(model):

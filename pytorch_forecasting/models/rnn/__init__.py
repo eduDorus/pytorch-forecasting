@@ -1,41 +1,22 @@
 """
-`DeepAR: Probabilistic forecasting with autoregressive recurrent networks
-<https://www.sciencedirect.com/science/article/pii/S0169207019301888>`_
-which is the one of the most popular forecasting algorithms and is often used as a baseline
+Simple recurrent model - either with LSTM or GRU cells.
 """
-from copy import copy, deepcopy
-from typing import Any, Dict, List, Tuple, Union
+from copy import copy
+from typing import Dict, List, Tuple, Union
 
-import matplotlib.pyplot as plt
-from matplotlib.pyplot import plot_date
 import numpy as np
-import pandas as pd
-from pytorch_lightning.core.lightning import LightningModule
 import torch
-import torch.distributions as dists
 import torch.nn as nn
-from torch.nn.utils import rnn
-from torch.utils.data.dataloader import DataLoader
 
-from pytorch_forecasting.data.encoders import EncoderNormalizer, MultiNormalizer, NaNLabelEncoder
+from pytorch_forecasting.data.encoders import MultiNormalizer, NaNLabelEncoder
 from pytorch_forecasting.data.timeseries import TimeSeriesDataSet
-from pytorch_forecasting.metrics import (
-    MAE,
-    MAPE,
-    MASE,
-    RMSE,
-    SMAPE,
-    DistributionLoss,
-    Metric,
-    MultiLoss,
-    NormalDistributionLoss,
-)
+from pytorch_forecasting.metrics import MAE, MAPE, MASE, RMSE, SMAPE, MultiHorizonMetric, MultiLoss, QuantileLoss
 from pytorch_forecasting.models.base_model import AutoRegressiveBaseModelWithCovariates
 from pytorch_forecasting.models.nn import HiddenState, MultiEmbedding, get_rnn
 from pytorch_forecasting.utils import apply_to_list, to_list
 
 
-class DeepAR(AutoRegressiveBaseModelWithCovariates):
+class RecurrentNetwork(AutoRegressiveBaseModelWithCovariates):
     def __init__(
         self,
         cell_type: str = "LSTM",
@@ -54,19 +35,17 @@ class DeepAR(AutoRegressiveBaseModelWithCovariates):
         embedding_labels: Dict[str, np.ndarray] = {},
         x_reals: List[str] = [],
         x_categoricals: List[str] = [],
-        n_validation_samples: int = None,
-        n_plotting_samples: int = None,
+        output_size: Union[int, List[int]] = 1,
         target: Union[str, List[str]] = None,
         target_lags: Dict[str, List[int]] = {},
-        loss: DistributionLoss = None,
+        loss: MultiHorizonMetric = None,
         logging_metrics: nn.ModuleList = None,
         **kwargs,
     ):
         """
-        DeepAR Network.
+        Recurrent Network.
 
-        The code is based on the article `DeepAR: Probabilistic forecasting with autoregressive recurrent networks
-        <https://www.sciencedirect.com/science/article/pii/S0169207019301888>`_.
+        Simple LSTM or GRU layer followed by output layer
 
         Args:
             cell_type (str, optional): Recurrent cell type ["LSTM", "GRU"]. Defaults to "LSTM".
@@ -89,32 +68,22 @@ class DeepAR(AutoRegressiveBaseModelWithCovariates):
                 embedding size
             embedding_paddings: list of indices for embeddings which transform the zero's embedding to a zero vector
             embedding_labels: dictionary mapping (string) indices to list of categorical labels
-            n_validation_samples (int, optional): Number of samples to use for calculating validation metrics.
-                Defaults to None, i.e. no sampling at validation stage and using "mean" of distribution for logging
-                metrics calculation.
-            n_plotting_samples (int, optional): Number of samples to generate for plotting predictions
-                during training. Defaults to ``n_validation_samples`` if not None or 100 otherwise.
+            output_size (Union[int, List[int]], optional): number of outputs (e.g. number of quantiles for
+                QuantileLoss and one target or list of output sizes).
             target (str, optional): Target variable or list of target variables. Defaults to None.
             target_lags (Dict[str, Dict[str, int]]): dictionary of target names mapped to list of time steps by
                 which the variable should be lagged.
                 Lags can be useful to indicate seasonality to the models. If you know the seasonalit(ies) of your data,
                 add at least the target variables with the corresponding lags to improve performance.
                 Defaults to no lags, i.e. an empty dictionary.
-            loss (DistributionLoss, optional): Distribution loss function. Keep in mind that each distribution
-                loss function might have specific requirements for target normalization.
-                Defaults to :py:class:`~pytorch_forecasting.metrics.NormalDistributionLoss`.
+            loss (MultiHorizonMetric, optional): loss: loss function taking prediction and targets.
             logging_metrics (nn.ModuleList, optional): Metrics to log during training.
                 Defaults to nn.ModuleList([SMAPE(), MAE(), RMSE(), MAPE(), MASE()]).
         """
         if loss is None:
-            loss = NormalDistributionLoss()
+            loss = MAE()
         if logging_metrics is None:
             logging_metrics = nn.ModuleList([SMAPE(), MAE(), RMSE(), MAPE(), MASE()])
-        if n_plotting_samples is None:
-            if n_validation_samples is None:
-                n_plotting_samples = n_validation_samples
-            else:
-                n_plotting_samples = 100
         self.save_hyperparameters()
         # store loss function separately as it is a module
         super().__init__(loss=loss, logging_metrics=logging_metrics, **kwargs)
@@ -134,7 +103,7 @@ class DeepAR(AutoRegressiveBaseModelWithCovariates):
             assert (
                 targeti in time_varying_reals_encoder
             ), f"target {targeti} has to be real"  # todo: remove this restriction
-        assert (isinstance(target, str) and isinstance(loss, DistributionLoss)) or (
+        assert (isinstance(target, str) and isinstance(loss, MultiHorizonMetric)) or (
             isinstance(target, (list, tuple)) and isinstance(loss, MultiLoss) and len(loss) == len(target)
         ), "number of targets should be equivalent to number of loss metrics"
 
@@ -152,11 +121,14 @@ class DeepAR(AutoRegressiveBaseModelWithCovariates):
 
         # add linear layers for argument projects
         if isinstance(target, str):  # single target
-            self.distribution_projector = nn.Linear(self.hparams.hidden_size, len(self.loss.distribution_arguments))
+            self.output_projector = nn.Linear(self.hparams.hidden_size, self.hparams.output_size)
+            assert not isinstance(self.loss, QuantileLoss), "QuantileLoss does not work with recurrent network"
         else:  # multi target
-            self.distribution_projector = nn.ModuleList(
-                [nn.Linear(self.hparams.hidden_size, len(args)) for args in self.loss.distribution_arguments]
+            self.output_projector = nn.ModuleList(
+                [nn.Linear(self.hparams.hidden_size, size) for size in self.hparams.output_size]
             )
+            for l in self.loss:
+                assert not isinstance(l, QuantileLoss), "QuantileLoss does not work with recurrent network"
 
     @classmethod
     def from_dataset(
@@ -174,12 +146,10 @@ class DeepAR(AutoRegressiveBaseModelWithCovariates):
             **kwargs: additional arguments such as hyperparameters for model (see ``__init__()``)
 
         Returns:
-            DeepAR network
+            Recurrent network
         """
-        new_kwargs = {}
-        if dataset.multi_target:
-            new_kwargs.setdefault("loss", MultiLoss([NormalDistributionLoss()] * len(dataset.target_names)))
-        new_kwargs.update(kwargs)
+        new_kwargs = copy(kwargs)
+        new_kwargs.update(cls.deduce_default_output_parameters(dataset=dataset, kwargs=kwargs, default_loss=MAE()))
         assert not isinstance(dataset.target_normalizer, NaNLabelEncoder) and (
             not isinstance(dataset.target_normalizer, MultiNormalizer)
             or all([not isinstance(normalizer, NaNLabelEncoder) for normalizer in dataset.target_normalizer])
@@ -243,9 +213,9 @@ class DeepAR(AutoRegressiveBaseModelWithCovariates):
     ):
         decoder_output, hidden_state = self.rnn(x, hidden_state, lengths=lengths, enforce_sorted=False)
         if isinstance(self.hparams.target, str):  # single target
-            output = self.distribution_projector(decoder_output)
+            output = self.output_projector(decoder_output)
         else:
-            output = [projector(decoder_output) for projector in self.distribution_projector]
+            output = [projector(decoder_output) for projector in self.output_projector]
         return output, hidden_state
 
     def decode(
@@ -261,17 +231,13 @@ class DeepAR(AutoRegressiveBaseModelWithCovariates):
         decode not by using actual values but rather by
         sampling new targets from past predictions iteratively
         """
-        if n_samples is None:
+        if self.training:
             output, _ = self.decode_all(input_vector, hidden_state, lengths=decoder_lengths)
             output = self.transform_output(output, target_scale=target_scale)
         else:
             # run in eval, i.e. simulation mode
             target_pos = self.target_positions
             lagged_target_positions = self.lagged_target_positions
-            # repeat for n_samples
-            input_vector = input_vector.repeat_interleave(n_samples, 0)
-            hidden_state = self.rnn.repeat_interleave(hidden_state, n_samples)
-            target_scale = apply_to_list(target_scale, lambda x: x.repeat_interleave(n_samples, 0))
 
             # define function to run at every decoding step
             def decode_one(
@@ -296,9 +262,6 @@ class DeepAR(AutoRegressiveBaseModelWithCovariates):
                 target_scale=target_scale,
                 n_decoder_steps=input_vector.size(1),
             )
-            # reshape predictions for n_samples:
-            # from n_samples * batch_size x time steps to batch_size x time steps x n_samples
-            output = apply_to_list(output, lambda x: x.reshape(-1, n_samples, input_vector.size(1)).permute(0, 2, 1))
         return output
 
     def forward(self, x: Dict[str, torch.Tensor], n_samples: int = None) -> Dict[str, torch.Tensor]:
@@ -317,102 +280,11 @@ class DeepAR(AutoRegressiveBaseModelWithCovariates):
             ].T,
         )
 
-        if self.training:
-            assert n_samples is None, "cannot sample from decoder when training"
         output = self.decode(
             input_vector,
             decoder_lengths=x["decoder_lengths"],
             target_scale=x["target_scale"],
             hidden_state=hidden_state,
-            n_samples=n_samples,
         )
         # return relevant part
         return self.to_network_output(prediction=output)
-
-    def create_log(self, x, y, out, batch_idx):
-        n_samples = [self.hparams.n_validation_samples, self.hparams.n_plotting_samples][self.training]
-        log = super().create_log(
-            x,
-            y,
-            out,
-            batch_idx,
-            prediction_kwargs=dict(n_samples=n_samples),
-            quantiles_kwargs=dict(n_samples=n_samples),
-        )
-        return log
-
-    def plot_prediction(
-        self,
-        x: Dict[str, torch.Tensor],
-        out: Dict[str, torch.Tensor],
-        idx: int,
-        add_loss_to_title: Union[Metric, torch.Tensor, bool] = False,
-        show_future_observed: bool = True,
-        ax=None,
-        **kwargs,
-    ) -> plt.Figure:
-        # workaround for not being able to compute loss for single sample without parameters of distribution
-        return super().plot_prediction(
-            x, out, idx=idx, add_loss_to_title=False, show_future_observed=show_future_observed, ax=ax, **kwargs
-        )
-
-    def predict(
-        self,
-        data: Union[DataLoader, pd.DataFrame, TimeSeriesDataSet],
-        mode: Union[str, Tuple[str, str]] = "prediction",
-        return_index: bool = False,
-        return_decoder_lengths: bool = False,
-        batch_size: int = 64,
-        num_workers: int = 0,
-        fast_dev_run: bool = False,
-        show_progress_bar: bool = False,
-        return_x: bool = False,
-        mode_kwargs: Dict[str, Any] = None,
-        n_samples: int = 100,
-    ):
-        """
-        predict dataloader
-
-        Args:
-            dataloader: dataloader, dataframe or dataset
-            mode: one of "prediction", "quantiles", "samples" or "raw", or tuple ``("raw", output_name)`` where
-                output_name is a name in the dictionary returned by ``forward()``
-            return_index: if to return the prediction index (in the same order as the output, i.e. the row of the
-                dataframe corresponds to the first dimension of the output and the given time index is the time index
-                of the first prediction)
-            return_decoder_lengths: if to return decoder_lengths (in the same order as the output
-            batch_size: batch size for dataloader - only used if data is not a dataloader is passed
-            num_workers: number of workers for dataloader - only used if data is not a dataloader is passed
-            fast_dev_run: if to only return results of first batch
-            show_progress_bar: if to show progress bar. Defaults to False.
-            return_x: if to return network inputs (in the same order as prediction output)
-            mode_kwargs (Dict[str, Any]): keyword arguments for ``to_prediction()`` or ``to_quantiles()``
-                for modes "prediction" and "quantiles"
-            n_samples: number of samples to draw. Defaults to 100.
-
-        Returns:
-            output, x, index, decoder_lengths: some elements might not be present depending on what is configured
-                to be returned
-        """
-        if isinstance(mode, str):
-            if mode in ["prediction", "quantiles"]:
-                if mode_kwargs is None:
-                    mode_kwargs = dict(use_metric=False)
-                else:
-                    mode_kwargs = deepcopy(mode_kwargs)
-                    mode_kwargs["use_metric"] = False
-            elif mode == "samples":
-                mode = ("raw", "prediction")
-        return super().predict(
-            data=data,
-            mode=mode,
-            return_decoder_lengths=return_decoder_lengths,
-            return_index=return_index,
-            n_samples=n_samples,  # new keyword that is passed to forward function
-            return_x=return_x,
-            show_progress_bar=show_progress_bar,
-            fast_dev_run=fast_dev_run,
-            num_workers=num_workers,
-            batch_size=batch_size,
-            mode_kwargs=mode_kwargs,
-        )

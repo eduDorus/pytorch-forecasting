@@ -41,8 +41,37 @@ def data_with_covariates():
         "music_fest",
     ]
     data[special_days] = data[special_days].apply(lambda x: x.map({0: "", 1: x.name})).astype("category")
+    data = data.astype(dict(industry_volume=float))
 
     return data
+
+
+def make_dataloaders(data_with_covariates, **kwargs):
+    training_cutoff = "2016-09-01"
+    max_encoder_length = 36
+    max_prediction_length = 6
+
+    kwargs.setdefault("target", "volume")
+    kwargs.setdefault("group_ids", ["agency", "sku"])
+    kwargs.setdefault("add_relative_time_idx", True)
+    kwargs.setdefault("time_varying_unknown_reals", ["volume"])
+
+    training = TimeSeriesDataSet(
+        data_with_covariates[lambda x: x.date < training_cutoff],
+        time_idx="time_idx",
+        max_encoder_length=max_encoder_length,
+        max_prediction_length=max_prediction_length,
+        **kwargs,  # fixture parametrization
+    )
+
+    validation = TimeSeriesDataSet.from_dataset(
+        training, data_with_covariates.copy(), min_prediction_idx=training.index.time.max() + 1
+    )
+    batch_size = 4
+    train_dataloader = training.to_dataloader(train=True, batch_size=batch_size, num_workers=0)
+    val_dataloader = validation.to_dataloader(train=False, batch_size=batch_size, num_workers=0)
+
+    return dict(train=train_dataloader, val=val_dataloader)
 
 
 @pytest.fixture(
@@ -72,74 +101,39 @@ def data_with_covariates():
             time_varying_unknown_categoricals=[],
             time_varying_unknown_reals=["volume", "log_volume", "industry_volume", "soda_volume", "avg_max_temp"],
             constant_fill_strategy={"volume": 0},
-            dropout_categoricals=["sku"],
+            categorical_encoders={"sku": NaNLabelEncoder(add_nan=True)},
         ),
         dict(static_categoricals=["agency", "sku"]),
         dict(randomize_length=True, min_encoder_length=2),
         dict(target_normalizer=EncoderNormalizer(), min_encoder_length=2),
-        dict(target_normalizer=GroupNormalizer(log_scale=True)),
-        dict(target_normalizer=GroupNormalizer(groups=["agency", "sku"], coerce_positive=1.0)),
+        dict(target_normalizer=GroupNormalizer(transformation="log")),
+        dict(target_normalizer=GroupNormalizer(groups=["agency", "sku"], transformation="softplus", center=False)),
         dict(target="agency"),
+        # test multiple targets
+        dict(target=["industry_volume", "volume"]),
+        dict(target=["agency", "volume"]),
+        dict(target=["agency", "volume"], min_encoder_length=1, min_prediction_length=1),
+        dict(target=["agency", "volume"], weight="volume"),
+        # test weights
+        dict(target="volume", weight="volume"),
     ]
 )
 def multiple_dataloaders_with_covariates(data_with_covariates, request):
-    training_cutoff = "2016-09-01"
-    max_encoder_length = 36
-    max_prediction_length = 6
-
-    params = request.param
-    params.setdefault("target", "volume")
-
-    training = TimeSeriesDataSet(
-        data_with_covariates[lambda x: x.date < training_cutoff],
-        time_idx="time_idx",
-        # weight="weight",
-        group_ids=["agency", "sku"],
-        max_encoder_length=max_encoder_length,
-        max_prediction_length=max_prediction_length,
-        add_relative_time_idx=True,
-        **params  # fixture parametrization
-    )
-
-    validation = TimeSeriesDataSet.from_dataset(
-        training, data_with_covariates, min_prediction_idx=training.index.time.max() + 1
-    )
-    batch_size = 4
-    train_dataloader = training.to_dataloader(train=True, batch_size=batch_size, num_workers=0)
-    val_dataloader = validation.to_dataloader(train=False, batch_size=batch_size, num_workers=0)
-
-    return dict(train=train_dataloader, val=val_dataloader)
+    return make_dataloaders(data_with_covariates, **request.param)
 
 
 @pytest.fixture
 def dataloaders_with_covariates(data_with_covariates):
-    training_cutoff = "2016-09-01"
-    max_encoder_length = 36
-    max_prediction_length = 6
-
-    training = TimeSeriesDataSet(
-        data_with_covariates[lambda x: x.date < training_cutoff],
-        time_idx="time_idx",
-        target="volume",
-        # weight="weight",
-        group_ids=["agency", "sku"],
+    data_with_covariates["target"] = data_with_covariates["volume"].clip(1e-3, 1.0)
+    return make_dataloaders(
+        data_with_covariates,
+        target="target",
         time_varying_known_reals=["discount"],
-        time_varying_unknown_reals=["volume"],
+        time_varying_unknown_reals=["target"],
         static_categoricals=["agency"],
-        max_encoder_length=max_encoder_length,
-        max_prediction_length=max_prediction_length,
         add_relative_time_idx=True,
-        target_normalizer=GroupNormalizer(groups=["agency", "sku"], coerce_positive=False),
+        target_normalizer=GroupNormalizer(groups=["agency", "sku"], center=False),
     )
-
-    validation = TimeSeriesDataSet.from_dataset(
-        training, data_with_covariates, min_prediction_idx=training.index.time.max() + 1
-    )
-    batch_size = 4
-    train_dataloader = training.to_dataloader(train=True, batch_size=batch_size, num_workers=0)
-    val_dataloader = validation.to_dataloader(train=False, batch_size=batch_size, num_workers=0)
-
-    return dict(train=train_dataloader, val=val_dataloader)
 
 
 @pytest.fixture()

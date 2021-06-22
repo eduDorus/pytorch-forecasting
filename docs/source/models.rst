@@ -7,7 +7,7 @@ Models
 
 Model parameters very much depend on the dataset for which they are destined.
 
-Pytorch Forecasting provides a ``.from_dataset()`` method for each model that
+PyTorch Forecasting provides a ``.from_dataset()`` method for each model that
 takes a :py:class:`~data.timeseries.TimeSeriesDataSet` and additional parameters
 that cannot directy derived from the dataset such as, e.g. ``learning_rate`` or ``hidden_size``.
 
@@ -19,7 +19,17 @@ Selecting an architecture
 --------------------------
 
 Criteria for selecting an architecture depend heavily on the use-case. There are multiple selection criteria
-and you should take into account.
+and you should take into account. Here is an overview over the pros and cons of the implemented models:
+
+.. csv-table:: Model comparison
+   :header: "Name",                                                                                        "Covariates", "Multiple targets", "Regression", "Classification", "Probabilistic", "Uncertainty", "Interactions between series", "Flexible history length", "Cold-start", "Required computational resources (1-5, 5=most)"
+
+   :py:class:`~pytorch_forecasting.models.rnn.RecurrentNetwork`,                                           "x",          "x",                "x",          "",               "",               "",           "",                            "x",                       "",           2
+   :py:class:`~pytorch_forecasting.models.mlp.DecoderMLP`,                                                 "x",          "x",                "x",          "x",              "",               "x",          "",                            "x",                       "x",          1
+   :py:class:`~pytorch_forecasting.models.nbeats.NBeats`,                                                  "",           "",                 "x",          "",               "",               "",           "",                            "",                        "",           1
+   :py:class:`~pytorch_forecasting.models.deepar.DeepAR`,                                                  "x",          "x",                "x",          "",               "x",              "x",          "",                            "x",                       "",           3
+   :py:class:`~pytorch_forecasting.models.temporal_fusion_transformer.TemporalFusionTransformer`,          "x",          "x",                "x",          "x",              "",               "x",          "",                            "x",                       "x",          4
+
 
 Size and type of available data
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -64,6 +74,17 @@ If you have only one or very few timeseries,
 they should be very long in order for a deep learning approach to work well. Consider also
 more traditional approaches.
 
+Type of prediction task
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Not every can do regression, classification or handle multiple targets. Some are exclusively
+geared towards a single task. For example, :py:class:`~pytorch_forecasting.models.nbeats.NBeats`
+can only be used for regression on a single target without covariates while the
+:py:class:`~pytorch_forecasting.models.temporal_fusion_transformer.TemporalFusionTransformer` supports
+multiple targets and even hetrogeneous targets where some are continuous variables and others categorical,
+i.e. regression and classification at the same time. :py:class:`~pytorch_forecasting.models.deepar.DeepAR`
+can handle multiple targets but only works for regression tasks.
+
 Supporting uncertainty
 ~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -79,7 +100,7 @@ be adversely impacted. In this case, a non-parameteric model will do much better
 :py:class:`~pytorch_forecasting.models.deepar.DeepAR` is an example for a parameteric model while
 the :py:class:`~pytorch_forecasting.models.temporal_fusion_transformer.TemporalFusionTransformer`
 can output quantile forecasts that can fit any distribution.
-Models based on normalizing flows merry the two worlds by providing a non-parameteric estimate
+Models based on normalizing flows marry the two worlds by providing a non-parameteric estimate
 of a full probability distribution. PyTorch Forecasting currently does not provide
 support for these but
 `Pyro, a package for probabilistic programming <https://pyro.ai/examples/normalizing_flows_i.html>`_ does
@@ -112,6 +133,8 @@ number of samples.
 Implementing new architectures
 -------------------------------
 
+Please see the :ref:`Using custom data and implementing custom models <new-model-tutorial>` tutorial on how implement basic and more advanced models.
+
 Every model should inherit from a base model in :py:mod:`~pytorch_forecasting.models.base_model`.
 
 .. autoclass:: pytorch_forecasting.models.base_model.BaseModel
@@ -127,9 +150,9 @@ See the API documentation for further details on available models:
 
 .. currentmodule:: pytorch_forecasting
 
-.. autosummary::
+.. moduleautosummary::
    :toctree: api/
    :template: custom-module-template.rst
    :recursive:
 
-   models
+   pytorch_forecasting.models
