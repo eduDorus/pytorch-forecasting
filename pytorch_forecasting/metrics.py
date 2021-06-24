@@ -796,7 +796,7 @@ class FocalLoss(MultiHorizonMetric):
         **kwargs
     ):
         super().__init__(reduction=reduction, **kwargs)
-        self.weights = torch.FloatTensor(weights).to(target.device)
+        self.weights = torch.FloatTensor(weights)
         self.gamma = gamma
 
     def loss(self, y_pred, target):
