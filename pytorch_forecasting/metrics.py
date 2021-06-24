@@ -802,7 +802,7 @@ class FocalLoss(MultiHorizonMetric):
     def loss(self, y_pred, target):
 
         weights = torch.FloatTensor(self.class_weights).to(target.device)
-        ce_loss = torch.nn.functional.cross_entropy(y_pred.view(-1, y_pred.size(-1)), target.view(-1).long(), reduction=self.reduction, weight=weights))
+        ce_loss = torch.nn.functional.cross_entropy(y_pred.view(-1, y_pred.size(-1)), target.view(-1).long(), reduction=self.reduction, weight=weights)
         pt = torch.exp(-ce_loss)
         focal_loss = ((1 - pt) ** self.gamma * ce_loss).mean()
         return focal_loss
