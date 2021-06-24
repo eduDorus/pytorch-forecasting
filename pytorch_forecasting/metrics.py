@@ -790,10 +790,10 @@ class FocalLoss(MultiHorizonMetric):
     """
     def __init__(
         self,
-        weights: List[float]
-        reduction: str = "none"
+        weights: List[float],
+        reduction: str = "none",
         gamma: int = 2,
-        **kwargs,
+        **kwargs
     ):
         super().__init__(reduction=reduction, **kwargs)
         self.weights = torch.FloatTensor(class_weights).to(target.device)
