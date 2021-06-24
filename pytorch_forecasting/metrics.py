@@ -782,6 +782,57 @@ class CrossEntropy(MultiHorizonMetric):
             torch.Tensor: prediction quantiles
         """
         return y_pred
+    
+    
+class FocalLoss(MultiHorizonMetric):
+    """
+    Cross Entropy with focal loss for classification.
+    """
+    def __init__(
+        self,
+        weights: List[float]
+        reduction: str = "none"
+        gamma: int = 2,
+        **kwargs,
+    ):
+        super().__init__(reduction=reduction, **kwargs)
+        self.weights = torch.FloatTensor(class_weights).to(target.device)
+        self.gamma = gamma
+
+    def loss(self, y_pred, target):
+
+        ce_loss = torch.nn.functional.cross_entropy(y_pred.view(-1, y_pred.size(-1)), target.view(-1).long(), reduction=self.reduction, weight=self.weights)
+        pt = torch.exp(-ce_loss)
+        focal_loss = ((1 - pt) ** self.gamma * ce_loss).mean()
+        return focal_loss
+
+    def to_prediction(self, y_pred: torch.Tensor) -> torch.Tensor:
+        """
+        Convert network prediction into a point prediction.
+
+        Returns best label
+
+        Args:
+            y_pred: prediction output of network
+
+        Returns:
+            torch.Tensor: point prediction
+        """
+        return y_pred.argmax(dim=-1)
+
+    def to_quantiles(self, y_pred: torch.Tensor, quantiles: List[float] = None) -> torch.Tensor:
+        """
+        Convert network prediction into a quantile prediction.
+
+        Args:
+            y_pred: prediction output of network
+            quantiles (List[float], optional): quantiles for probability range. Defaults to quantiles as
+                as defined in the class initialization.
+
+        Returns:
+            torch.Tensor: prediction quantiles
+        """
+        return y_pred
 
 
 class RMSE(MultiHorizonMetric):
